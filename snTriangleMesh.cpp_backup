@@ -1,0 +1,984 @@
+#include "snTriangleMesh.h"
+#include <math.h>
+
+using namespace snEssence;
+
+snTriangleMesh::snTriangleMesh()
+: snMesh()
+{
+   mBoolUpToDate = false;
+   mTriangles.clear();
+}
+
+snTriangleMesh::~snTriangleMesh()
+{
+   Clear();
+}
+
+void snTriangleMesh::Clear()
+{
+   snMesh::Clear();
+   for(snIndex i=0;i<mTriangles.size();i++)
+      delete(mTriangles[i]);
+   mTriangles.clear();
+}
+
+
+snTriangle * snTriangleMesh::AddTriangle(snIndex index1, snIndex index2, snIndex index3 ,bool in_UpdateLookups)
+{
+   mTriangles.push_back(new snTriangle(index1,index2,index3,this));
+   snTriangle * triangle = mTriangles[mTriangles.size()-1];
+
+   // if we are already up to date, update myself!
+   if(mTopoUpToDate && in_UpdateLookups)
+      RefreshTopoLookupsPerPolygon(triangle->GetIndex());
+   return triangle;
+}
+
+snBboxf snTriangleMesh::GetBbox()
+{
+   RefreshBoolLookups();
+   return mBBox;
+}
+
+snTriangle * snTriangleMesh::GetTriangle(snIndex in_Index)
+{
+   if(in_Index<GetNbTriangles())
+      return mTriangles[in_Index];
+   return NULL;
+}
+
+void snTriangleMesh::DeleteTriangle(snIndex in_Index)
+{
+   if(in_Index >= GetNbTriangles())
+      return;
+
+   // first delete the memory of the triangle
+   delete(mTriangles[in_Index]);
+   snpTriangleVec::iterator it = mTriangles.begin();
+   it+=in_Index;
+   mTriangles.erase(it);
+
+   InvalidateTopo();
+}
+
+void snTriangleMesh::Merge(snTriangleMesh * in_Mesh)
+{
+   snIndex offset = GetNbPoints();
+
+   // copy all points
+   for(snIndex i=0;i<in_Mesh->GetNbPoints();i++)
+      mPoints.push_back(in_Mesh->GetPoint(i));
+
+   // copy all polygons
+   for(snIndex i=0;i<in_Mesh->GetNbTriangles();i++)
+   {
+      snTriangle * triangle = in_Mesh->GetTriangle(i);
+      AddTriangle(
+         triangle->GetPointIndex0()+offset,
+         triangle->GetPointIndex1()+offset,
+         triangle->GetPointIndex2()+offset,false);
+   }
+
+   InvalidateTopo();
+
+}
+
+snIndex snTriangleMesh::RemoveUnusedPoints()
+{
+   snIndex removed = 0;
+
+   // first count the usage
+   snIndexVec count(GetNbPoints(),0);
+   snIndexVec * pnts;
+   snTriangle * triangle;
+   for(snIndex i=0;i<GetNbTriangles();i++)
+   {
+      triangle = GetTriangle(i);
+      for(snIndex j=0;j<3;j++)
+         count[triangle->GetPointIndex(j)]++;
+   }
+
+   // now create an offset map
+   snIndexVec offset(GetNbPoints(),0);
+   snVector3fVec newPoints;
+   for(snIndex i=1,o=0;i<GetNbPoints();i++,o++)
+   {
+      // copy the offset from the previous point
+      offset[i] = offset[o];
+      if(count[o]==0)
+      {
+         offset[i]++;
+         removed++;
+      }
+      else
+         newPoints.push_back(GetPoint(o));
+   }
+   // add the last point
+   if(count[count.size()-1]>0)
+      newPoints.push_back(GetPoint(count.size()-1));
+
+   // update the points!
+   mPoints = newPoints;
+
+   // now update the polygons
+   for(snIndex i=0;i<GetNbTriangles();i++)
+   {
+      pnts = GetTriangle(i)->GetPointIndicesPtr();
+      for(snIndex j=0;j<pnts->size();j++)
+         pnts->at(j) -= offset[pnts->at(j)];
+   }
+
+   // if we removed some points, we need to refresh the lookups
+   if(removed > 0)
+      InvalidateTopo();
+   return removed;
+}
+
+void snTriangleMesh::RefreshTopoLookupsPerPolygon(snIndex in_PolygonIndex)
+{
+   snTriangle * triangle = GetTriangle(in_PolygonIndex);
+   if(triangle==NULL)
+      return;
+
+   snIndexVec * index = triangle->GetPointIndicesPtr();
+   snIndex i = in_PolygonIndex;
+
+   // add a vector of indices for the polygon if necessary
+   while(mLU_PolygonIndexToPointIndices.size() < in_PolygonIndex)
+   {
+      mLU_PolygonIndexToPointIndices.push_back(snIndexVec());
+      mLU_PolygonIndexToSegmentIndices.push_back(snIndexVec());
+   }
+
+   for(snIndex j=0;j<3;j++)
+   {
+      // add the point to the polygon!
+      mLU_PolygonIndexToPointIndices[i].push_back(index->at(j));
+      // add the polygon to the point
+      mLU_PointIndexToPolygonIndices[index->at(j)].push_back(i);
+
+      // get the index tuple for the segment
+      snIndexTuple tuple = triangle->GetSegmentTuple(j);
+      snIndexTupleMap::iterator it = mLU_PointIndices2SegmentIndex.find(tuple);
+      if(it == mLU_PointIndices2SegmentIndex.end())
+      {
+         // this is a new edge, hurray! (the index of the edge is the size of edges mapped)
+         mLU_PointIndexToSegmentIndices[index->at(j)].push_back(mLU_NbSegments);
+         mLU_PolygonIndexToSegmentIndices[i].push_back(mLU_NbSegments);
+         mLU_SegmentIndexToPolygonIndices.push_back(snIndexVec());
+         mLU_SegmentIndexToPolygonIndices[mLU_NbSegments].push_back(i);
+         mLU_SegmentIndexToPointIndices.push_back(snIndexVec());
+         mLU_SegmentIndexToPointIndices[mLU_NbSegments].push_back(tuple.a);
+         mLU_SegmentIndexToPointIndices[mLU_NbSegments].push_back(tuple.b);
+         mLU_SegmentIndexToInverted.push_back((tuple.a != triangle->GetPointIndex(j)) ? 1 : 0);
+
+         // also add the points to points
+         mLU_PointIndexToPointIndices[tuple.a].push_back(tuple.b);
+         mLU_PointIndexToPointIndices[tuple.b].push_back(tuple.a);
+
+         // insert it to the lookup!
+         mLU_PointIndices2SegmentIndex.insert(snIndexTuplePair(tuple,mLU_NbSegments));
+         mLU_NbSegments++;
+      }
+      else
+      {
+         // we already have the edge!
+         mLU_PointIndexToSegmentIndices[index->at(j)].push_back(it->second);
+         mLU_PolygonIndexToSegmentIndices[i].push_back(it->second);
+         mLU_SegmentIndexToPolygonIndices[it->second].push_back(i);
+      }
+   }
+   mLU_NbSamples+=3;
+}
+
+void snTriangleMesh::RefreshBoolLookups()
+{
+   if(mBoolUpToDate)
+      return;
+
+   mBBox.Clear();
+
+   // calculate the bbox
+   for(snIndex i=0;i<mPoints.size();i++)
+      mBBox.Merge(mPoints[i]);
+
+   mBoolUpToDate = true;
+}
+
+bool snTriangleMesh::GetOutlines(snIndexVecVec * out_pResult)
+{
+   RefreshTopoLookups();
+
+   // map to mark points as done!
+   snIndex nbOutline = 0;
+   snIndexVec pointOutline;
+   snIndexVec pointDone(GetNbPoints(),0);
+   for(snIndex i=0;i<pointDone.size();i++)
+   {
+      if(IsPointBoundary(i))
+      {
+         pointOutline.push_back(i);
+         nbOutline++;
+         pointDone[i] = 1;
+      }
+   }
+
+   // let's early out here, if the output is not wanted
+   if(out_pResult == NULL)
+      return nbOutline > 0;
+
+   // now as we know how many points we have as outline,
+   // lets create the vectors for each one
+   snIndexVec outline;
+   snIndexVec * pointEdges;
+   snIndexVec * edgePoints;
+   bool found = true;
+   snIndex nextIndex;
+   while(nbOutline>0)
+   {
+      // if this is the first time we hit this
+      if(outline.size()==0)
+      {
+         // find the first outline point
+         for(snIndex i=0;i<pointOutline.size();i++)
+         {
+            if(pointDone[pointOutline[i]]==1)
+            {
+               // we found our start!
+               pointDone[pointOutline[i]] = 0;
+               outline.push_back(pointOutline[i]);
+            }
+         }
+      }
+      else
+      {
+         // find the next point in the outline
+         found = false;
+         pointEdges = GetSegmentsFromPoint(outline.back());
+
+         // now, the first time we need to really watch for the direction!
+         for(snIndex i=0;i<pointEdges->size();i++)
+         {
+            // skip non-boundary points
+            if(!IsSegmentBoundary(pointEdges->at(i)))
+               continue;
+
+            // get the other point on that edge
+            edgePoints = GetPointsFromSegment(pointEdges->at(i));
+            nextIndex = (edgePoints->at(0) == outline.back()) ? edgePoints->at(1) : edgePoints->at(0);
+
+            // skip done points!
+            if(nextIndex == outline.front())
+            {
+               // this is closed!
+               out_pResult->push_back(outline);
+               outline.clear();
+               found = true;
+               break;
+            }
+
+            // if the point was touched before
+            if(pointDone[nextIndex]==0)
+               continue;
+
+            pointDone[nextIndex] = 1;
+            nbOutline--;
+            found = true;
+            break;
+         }
+
+         // this should not happen, but anyway
+         // let's try to avoid an infinite loop
+         if(!found)
+            break;
+      }
+   }
+
+   return nbOutline > 0;
+}
+
+bool snTriangleMesh::IsPointInsideClosed(const snVector3f & in_Point)
+{
+   snVector3f direction(0,1,0);
+   snRay ray(in_Point,direction);
+
+   mesh2line hits;
+   if(GetIntersectionsWithRay(ray,&hits))
+   {
+      // check if the count is odd
+      float countf = float(hits.index.size()) * .5f;
+      return countf != floor(countf);
+   }
+   return false;
+}
+
+bool snTriangleMesh::IsPointInsideClosedConvex(const snVector3f & in_Point, mesh2ray * out_pResult)
+{
+   RefreshBoolLookups();
+
+   // check if the point is inside the bounding box, if not
+   // it cannot be inside the mesh
+   if(!mBBox.IsPointInside(in_Point))
+      return false;
+
+   // now, create a ray and check the normal that you are hitting!
+   snVector3f direction(0,1,0);
+   snRay ray(in_Point,direction);
+   mesh2ray intersection;
+   if(GetIntersectionWithRay(ray,&intersection))
+   {
+      snTriangle * triangle = GetTriangle(intersection.index);
+      bool result = triangle->GetPlanePtr()->GetNormal().Dot(direction)>0.0f;
+      if(result && out_pResult != NULL)
+      {
+         out_pResult->index = intersection.index;
+         out_pResult->intersection = intersection.intersection;
+      }
+      return result;
+   }
+
+   return false;
+}
+
+bool snTriangleMesh::GetIntersectionWithRay(const snRay & in_Ray, mesh2ray * out_pResult)
+{
+   // find out if the ray will ever hit the bbox!
+   if(!in_Ray.GetIntersectionWithBBox(mBBox))
+      return false;
+
+   // find the triangle that we hit!
+   snTriangle * triangle;
+   snTriangle::tri2ray intersection;
+   for(snIndex i=0;i<GetNbTriangles();i++)
+   {
+      triangle = GetTriangle(i);
+
+      // if we hit a triangle, let's check if the normal is the same way
+      if(triangle->GetIntersectionWithRay(in_Ray,&intersection))
+      {
+         if(out_pResult != NULL)
+         {
+            out_pResult->index = i;
+            out_pResult->intersection = intersection;
+         }
+         return true;
+      }
+   }
+   return false;
+}
+
+bool snTriangleMesh::GetClosestIntersectionWithRay(const snRay & in_Ray, mesh2ray * out_pResult)
+{
+   // if we want to find the closest one, let's use the GetALl method
+   if(out_pResult == NULL)
+      return false;
+
+   mesh2line hits;
+   if(GetIntersectionsWithRay(in_Ray,&hits))
+   {
+      out_pResult->index = hits.index.front();
+      out_pResult->intersection = hits.intersection.front();
+      return true;
+   }
+   return false;
+}
+
+bool snTriangleMesh::GetIntersectionsWithRay(const snRay & in_Ray, mesh2line * out_pResult)
+{
+   // in this case we really want to collect intersections,
+   // so if there is no output pointer, bail out
+   if(out_pResult == NULL)
+      return false;
+
+   // find out if the ray will ever hit the bbox!
+   if(!in_Ray.GetIntersectionWithBBox(mBBox))
+      return false;
+
+   // find the triangle that we hit!
+   snTriangle * triangle;
+   snTriangle::tri2ray triangleHit;
+   mesh2ray hit;
+   std::map<float,mesh2ray> hits;
+   float distance;
+   snVector3f hitPoint;
+   for(snIndex i=0;i<GetNbTriangles();i++)
+   {
+      triangle = GetTriangle(i);
+
+      // see if the triangle is hit by the ray
+      if(triangle->GetIntersectionWithRay(in_Ray,&triangleHit))
+      {
+         // construct the mesh hit
+         hit.index = i;
+         hit.intersection = triangleHit;
+
+         // calculate a pseudo distance
+         // (fast using dot product)
+         hitPoint.Sub(triangleHit.pnt,in_Ray.GetOrigin());
+         distance = in_Ray.GetDirection().Dot(hitPoint);
+         hits.insert(std::pair<float,mesh2ray>(distance,hit));
+      }
+   }
+
+   // if we don't have any hits
+   if(hits.size()==0)
+      return false;
+
+   // loop over all results and output them!
+   out_pResult->index.resize(hits.size());
+   out_pResult->intersection.resize(hits.size());
+   snIndex i=0;
+   for(std::map<float,mesh2ray>::iterator it=hits.begin();it!=hits.end();it++)
+   {
+      out_pResult->index[i] = it->second.index;
+      out_pResult->intersection[i++] = it->second.intersection;
+   }
+   return true;
+}
+
+bool snTriangleMesh::GetIntersectionsWithLine(const snLine & in_Line, mesh2line * out_pResult)
+{
+   // find out if the line will ever hit the bbox!
+   if(!in_Line.GetIntersectionWithBBox(mBBox))
+      return false;
+
+   // find the triangle that we hit!
+   snTriangle * triangle;
+   snTriangle::tri2ray intersection;
+   bool result = false;
+   for(snIndex i=0;i<GetNbTriangles();i++)
+   {
+      triangle = GetTriangle(i);
+
+      // if we hit a triangle, let's check if the normal is the same way
+      if(triangle->GetIntersectionWithLine(in_Line,&intersection))
+      {
+         if(out_pResult != NULL)
+         {
+            out_pResult->index.push_back(i);
+            out_pResult->intersection.push_back(intersection);
+            result = true;
+         }
+         else
+            // early jump out if we don't have to collect intersections
+            return true;
+      }
+   }
+   return result;
+}
+
+bool snTriangleMesh::GetIntersectionsWithSegment(const snSegment & in_Segment, mesh2line * out_pResult)
+{
+   // find out if the segment will ever hit the bbox!
+   if(!in_Segment.GetIntersectionWithBBox(mBBox))
+      return false;
+
+   // find the triangle that we hit!
+   snTriangle * triangle;
+   snTriangle::tri2ray intersection;
+   bool result = false;
+   for(snIndex i=0;i<GetNbTriangles();i++)
+   {
+      triangle = GetTriangle(i);
+
+      // if we hit a triangle, let's check if the normal is the same way
+      if(triangle->GetIntersectionWithSegment(in_Segment,&intersection))
+      {
+         if(out_pResult != NULL)
+         {
+            out_pResult->index.push_back(i);
+            out_pResult->intersection.push_back(intersection);
+            result = true;
+         }
+         else
+            // early jump out if we don't have to collect intersections
+            return true;
+      }
+   }
+   return result;
+}
+
+bool snTriangleMesh::GetMeshBelowPlane(const snPlane & in_Plane, snTriangleMesh * out_pResult)
+{
+   // early jumpout
+   if(out_pResult == NULL)
+      return false;
+
+   // first, let's find all points that are below the plane
+   snIndex nbBelow = 0;
+   std::vector<float> pointDistance(GetNbPoints(),0.0f);
+   snIndexVec pointPointIndex(GetNbPoints());
+   snIndexVec pointsBelow(GetNbPoints());
+   for(snIndex i=0;i<GetNbPoints();i++)
+   {
+      pointDistance[i] = in_Plane.GetDistance(GetPoint(i));
+      if(pointDistance[i]<0)
+      {
+         pointPointIndex[i] = nbBelow;
+         pointsBelow[nbBelow] = i;
+         nbBelow++;
+      }
+   }
+
+   // empty the output mesh
+   out_pResult->Clear();
+
+   // if there is nothing above, we can't cut it
+   if(nbBelow == pointDistance.size())
+   {
+      out_pResult->Merge(this);
+      return false;
+   }
+
+   // if all are above
+   if(nbBelow == 0)
+      return false;
+
+   // great, first, let's add all of the old points
+   for(snIndex i=0;i<nbBelow;i++)
+      out_pResult->AddPoint(GetPoint(pointsBelow[i]));
+
+   // we have to cut something!
+   // let's cut all edges and remember the newly created points!
+   std::vector<bool> edgeIsCut(GetNbSegments(),false);
+   std::vector<snIndex> edgePointIndex(GetNbSegments());
+   snIndexVec * edgePoints;
+   snVector3f edgePos;
+   for(snIndex i=0;i<GetNbSegments();i++)
+   {
+      edgePoints = GetPointsFromSegment(i);
+      // if the points are on the same side, continue
+      if((pointDistance[edgePoints->at(0)] < 0) == (pointDistance[edgePoints->at(1)] < 0))
+         continue;
+
+      // create the new point
+      edgePos.InterPolate(
+         fabs(pointDistance[edgePoints->at(0)]) / (fabs(pointDistance[edgePoints->at(0)]) + fabs(pointDistance[edgePoints->at(1)])),
+              GetPoint(edgePoints->at(0)),GetPoint(edgePoints->at(1)));
+
+      // remember the new point's index
+      edgePointIndex[i] = out_pResult->GetNbPoints();
+      out_pResult->AddPoint(edgePos);
+   }
+
+   // cool, now let's add all polygons...!
+   snTriangle * triangle;
+   snIndex index0,index1,index2;
+   bool above0,above1,above2;
+   for(snIndex i=0;i<GetNbTriangles();i++)
+   {
+      triangle = GetTriangle(i);
+      for(snIndex k=0;k<3;k++)
+      {
+         // we loop here for shifting!
+         index0 = triangle->GetPointIndex((k+0)%3);
+         index1 = triangle->GetPointIndex((k+1)%3);
+         index2 = triangle->GetPointIndex((k+2)%3);
+         above0 = pointDistance[index0] > 0.0f;
+         above1 = pointDistance[index1] > 0.0f;
+         above2 = pointDistance[index2] > 0.0f;
+
+         // first check if the triangle is completely above
+         if(above0 && above1 && above2)
+            break;
+
+         // now check if the triangle is completely below
+         if(!above0 && !above1 && !above2)
+         {
+            out_pResult->AddTriangle(
+               pointPointIndex[index0],
+               pointPointIndex[index1],
+               pointPointIndex[index2]);
+            break;
+         }
+
+         // well well, this polygon has to be cut, let's find out
+         // which edge has to be cut
+         if(above0 && above1 && !above2)
+         {
+            // we need to create a new triangle
+            out_pResult->AddTriangle(
+               edgePointIndex[GetSegmentIndexFromTuple(snIndexTuple(index1,index2,true))],
+               pointPointIndex[index2],
+               edgePointIndex[GetSegmentIndexFromTuple(snIndexTuple(index0,index2,true))]);
+            break;;
+         }
+
+         // we need to create two triangles!
+         if(above0 && !above1 && !above2)
+         {
+            out_pResult->AddTriangle(
+               edgePointIndex[GetSegmentIndexFromTuple(snIndexTuple(index0,index2,true))],
+               edgePointIndex[GetSegmentIndexFromTuple(snIndexTuple(index0,index1,true))],
+               pointPointIndex[index1]);
+            out_pResult->AddTriangle(
+               edgePointIndex[GetSegmentIndexFromTuple(snIndexTuple(index0,index2,true))],
+               pointPointIndex[index1],
+               pointPointIndex[index2]);
+            break;
+         }
+      }
+   }
+
+   return false;
+}
+
+bool snTriangleMesh::GetIntersectingMesh(snTriangleMesh * in_pMesh, snTriangleMesh * out_pResult, snString * in_pLog)
+{
+   // early jumpout
+   if(out_pResult == NULL)
+      return false;
+
+   // there is only an intersection if the bboxes intersect
+   snBboxf bbox;
+   if(!GetBbox().GetIntersectionWithBbox(in_pMesh->GetBbox(),&bbox))
+      return false;
+
+   // so let's find all of the triangles
+   // while we are doing that we can also look at all point
+   // of the corresponding triangle and to a ray test to see
+   // if the point is inside
+   snIndexVec triangles1,triangles2;
+   snTriangle * triangle1, * triangle2;
+   std::vector<int> pointInside1(GetNbPoints(),-1);
+   std::vector<int> pointInside2(in_pMesh->GetNbPoints(),-1);
+
+   // first let's find my triangles inside of the given bounding box
+   for(snIndex i=0;i<GetNbTriangles();i++)
+   {
+      triangle1 = GetTriangle(i);
+      if(triangle1->GetIntersectionWithBBox(bbox))
+      {
+         triangles1.push_back(i);
+         for(snIndex j=0;j<3;j++)
+         {
+            // right now we are assuming that the first ray intersection we hit
+            // will return a normal that can be taken as an indicator that this
+            // point is inside or outside. maybe we have to move this to
+            // "IsPointInsideClosed" instead, which is more slow
+            if(pointInside1[triangle1->GetPointIndex(j)]==-1)
+               pointInside1[triangle1->GetPointIndex(j)] =
+                  (int)in_pMesh->IsPointInsideClosed(GetPoint(triangle1->GetPointIndex(j)));
+         }
+      }
+   }
+   // now we do the exact same thing but for the other mesh
+   for(snIndex i=0;i<in_pMesh->GetNbTriangles();i++)
+   {
+      triangle2 = in_pMesh->GetTriangle(i);
+      if(triangle2->GetIntersectionWithBBox(bbox))
+      {
+         triangles2.push_back(i);
+         for(snIndex j=0;j<3;j++)
+         {
+            // right now we are assuming that the first ray intersection we hit
+            // will return a normal that can be taken as an indicator that this
+            // point is inside or outside. maybe we have to move this to
+            // "IsPointInsideClosed" instead, which is more slow
+            if(pointInside2[triangle2->GetPointIndex(j)]==-1)
+               pointInside2[triangle2->GetPointIndex(j)] =
+                  (int)IsPointInsideClosed(in_pMesh->GetPoint(triangle2->GetPointIndex(j)));
+         }
+      }
+   }
+
+   // to be sure that we will find all intersections,
+   // we need to ensure first to find the edges that
+   // are intersecting, and then follow up with the proper
+   // points
+   snTriangle::tri2tri triangleHit;
+
+   // hash maps for points and intersection
+   std::vector<int> pointPointIndex1(GetNbPoints(),-1);
+   std::vector<int> pointPointIndex2(in_pMesh->GetNbPoints(),-1);
+   std::vector<mesh2mesh> intersection1(GetNbTriangles());
+   std::vector<mesh2mesh> intersection2(in_pMesh->GetNbTriangles());
+   std::vector<snTriangle::tri2tri> * hits1;
+   std::vector<snTriangle::tri2tri> * hits2;
+
+   // hash map for points on edge (cutting with triangles)
+   snIndexTupleMap edgePointIndices1;
+   snIndexTupleMap edgePointIndices2;
+   snIndexTupleMap trianglePointIndices1;
+   snIndexTupleMap trianglePointIndices2;
+   snIndexTupleMap::iterator it;
+   snIndexTuple tuple;
+   snString log;
+
+   // loop over all of my triangles to merge them!
+   for(snIndex i=0;i<triangles1.size();i++)
+   {
+      triangle1 = GetTriangle(triangles1[i]);
+      hits1 = &(intersection1[triangles1[i]].intersection);
+
+      // now loop over all of the other triangles
+      for(snIndex j=0;j<triangles2.size();j++)
+      {
+         triangle2 = in_pMesh->GetTriangle(triangles2[j]);
+         hits2 = &(intersection2[triangles2[j]].intersection);
+
+         // see if the triangles intersect
+         if(triangle1->GetIntersectionWithTriangle(triangle2,&triangleHit))
+         {
+            // so we have a hit... what do we do now? no idea
+            hits1->push_back(triangleHit);
+            hits2->push_back(triangleHit);
+
+            // very cool, so now let's see if we need to add any points
+            switch(triangleHit.mode)
+            {
+               case 0: // complete cut...!
+               {
+                  for(snIndex k=0;k<2;k++)
+                  {
+                     // add the points
+                     tuple.SetSorted(triangleHit.GetMode(0,k),triangle2->GetIndex());
+                     if(edgePointIndices1.find(tuple) == edgePointIndices1.end())
+                     {
+                        edgePointIndices1.insert(snIndexTuplePair(tuple,out_pResult->GetNbPoints()));
+                        trianglePointIndices2.insert(snIndexTuplePair(tuple.GetInverted(),out_pResult->GetNbPoints()));
+                        out_pResult->AddPoint(triangleHit.GetPoint(0,k));
+
+                        //log.Compose("case 0 creating point %d\n",out_pResult->GetNbPoints()-1);
+                        //in_pLog->Append(log);
+
+                     }
+                  }
+                  break;
+               }
+               case 1: // only inlying...!
+               {
+                  for(snIndex k=0;k<2;k++)
+                  {
+                     // add the points
+                     tuple.SetSorted(triangle1->GetIndex(),triangleHit.GetMode(0,k));
+                     if(trianglePointIndices1.find(tuple) == edgePointIndices1.end())
+                     {
+                        trianglePointIndices1.insert(snIndexTuplePair(tuple,out_pResult->GetNbPoints()));
+                        edgePointIndices2.insert(snIndexTuplePair(tuple.GetInverted(),out_pResult->GetNbPoints()));
+                        out_pResult->AddPoint(triangleHit.GetPoint(0,k));
+                        //log.Compose("case 1 creating point %d\n",out_pResult->GetNbPoints()-1);
+                        //in_pLog->Append(log);
+                     }
+                  }
+                  break;
+               }
+               case 2: // partial cut... oh dear
+               {
+                  // the first point is on this triangle
+                  tuple.SetSorted(triangle1->GetIndex(),triangleHit.GetMode(1,0));
+                  if(trianglePointIndices1.find(tuple) == trianglePointIndices1.end())
+                  {
+                     trianglePointIndices1.insert(snIndexTuplePair(tuple,out_pResult->GetNbPoints()));
+                     edgePointIndices2.insert(snIndexTuplePair(tuple.GetInverted(),out_pResult->GetNbPoints()));
+                     out_pResult->AddPoint(triangleHit.GetPoint(0,0));
+
+                     //log.Compose("case 2a creating point %d\n",out_pResult->GetNbPoints()-1);
+                     //in_pLog->Append(log);
+                  }
+
+                  // the second point is on both edges!
+                  tuple.SetSorted(triangleHit.GetMode(0,1),triangle2->GetIndex());
+                  if(edgePointIndices1.find(tuple) == edgePointIndices1.end())
+                  {
+                     edgePointIndices1.insert(snIndexTuplePair(tuple,out_pResult->GetNbPoints()));
+                     trianglePointIndices2.insert(snIndexTuplePair(tuple.GetInverted(),out_pResult->GetNbPoints()));
+                     out_pResult->AddPoint(triangleHit.GetPoint(0,1));
+
+                     //log.Compose("case 2b creating point %d\n",out_pResult->GetNbPoints()-1);
+                     //in_pLog->Append(log);
+                  }
+
+                  /*
+                  // the last point is on the other triangle!
+                  tuple.SetSorted(triangle2->GetIndex(),triangleHit.GetMode(0,1));
+                  if(trianglePointIndices2.find(tuple) == trianglePointIndices2.end())
+                  {
+                     trianglePointIndices2.insert(snIndexTuplePair(tuple,out_pResult->GetNbPoints()));
+                     edgePointIndices1.insert(snIndexTuplePair(tuple.GetInverted(),out_pResult->GetNbPoints()));
+                     out_pResult->AddPoint(triangleHit.GetPoint(1,1));
+                  }*/
+                  break;
+               }
+            }
+         }
+      }
+
+      // deal with all cases
+      switch(hits1->size())
+      {
+         case 0:  // no intersection
+         {
+            // we don't know if the triangle is completely outside or inside
+            // so let's look at the first point
+            if(pointInside1[triangle1->GetPointIndex0()]!=1)
+               break;
+
+            for(snIndex j=0;j<3;j++)
+            {
+               // if the point was not merged
+               if(pointPointIndex1[triangle1->GetPointIndex(j)]==-1)
+               {
+                  pointPointIndex1[triangle1->GetPointIndex(j)] = out_pResult->GetNbPoints();
+                  out_pResult->AddPoint(triangle1->GetPoint(triangle1->GetPointIndex(j)));
+               }
+            }
+
+            // merge the triangle
+            out_pResult->AddTriangle(
+               pointPointIndex1[triangle1->GetPointIndex0()],
+               pointPointIndex1[triangle1->GetPointIndex1()],
+               pointPointIndex1[triangle1->GetPointIndex2()]);
+            break;
+         }
+         case 1:  // one intersection... -> this can only happen if we cut the triangle in the middle
+         {
+            // so to solve this there are only two cases
+            snIndex index0,index1,index2;
+            index0 = triangle1->GetPointIndex0();
+            index1 = triangle1->GetPointIndex1();
+            index2 = triangle1->GetPointIndex2();
+
+            // find the edges that are cut
+            int edge0,edge1,edge2;
+            edge0 = edge1 = edge2 = -1;
+            it = edgePointIndices1.find(snIndexTuple(triangle1->GetSegmentIndex(0),hits1->at(0).tri1Index));
+            if(it != edgePointIndices1.end())
+               edge0 = it->second;
+            it = edgePointIndices1.find(snIndexTuple(triangle1->GetSegmentIndex(1),hits1->at(0).tri1Index));
+            if(it != edgePointIndices1.end())
+               edge1 = it->second;
+            it = edgePointIndices1.find(snIndexTuple(triangle1->GetSegmentIndex(2),hits1->at(0).tri1Index));
+            if(it != edgePointIndices1.end())
+               edge2 = it->second;
+
+            // create the triangles
+            int pnt0,pnt1,pnt2,pnt3;
+            pnt0 = pnt1 = pnt2 = pnt3 = -1;
+            if(edge0 != -1 && edge1 != -1)
+            {
+               if(pointInside1[index1])
+               {
+                  pnt0 = edge1;
+                  pnt1 = edge0;
+                  pnt2 = index1;
+               }
+               else
+               {
+                  pnt0 = edge0;
+                  pnt1 = edge1;
+                  pnt2 = index2;
+                  pnt3 = index0;
+               }
+            }
+            else if(edge1 != -1 && edge2 != -1)
+            {
+               if(pointInside1[index2])
+               {
+                  pnt0 = edge2;
+                  pnt1 = edge1;
+                  pnt2 = index2;
+               }
+               else
+               {
+                  pnt0 = edge1;
+                  pnt1 = edge2;
+                  pnt2 = index0;
+                  pnt3 = index1;
+               }
+            }
+            else if(edge0 != -1 && edge2 != -1)
+            {
+               if(pointInside1[index0])
+               {
+                  pnt0 = edge0;
+                  pnt1 = edge2;
+                  pnt2 = index0;
+               }
+               else
+               {
+                  pnt0 = edge2;
+                  pnt1 = edge0;
+                  pnt2 = index1;
+                  pnt3 = index2;
+               }
+            }
+
+            // check if we have to merge the points!
+            if(pnt2 != -1)
+            {
+               if(pointPointIndex1[pnt2]==-1)
+               {
+                  pointPointIndex1[pnt2] = out_pResult->GetNbPoints();
+                  out_pResult->AddPoint(GetPoint(pnt2));
+               }
+               out_pResult->AddTriangle(pnt0,pnt1,pointPointIndex1[pnt2]);
+            }
+            if(pnt3 != -1)
+            {
+               if(pointPointIndex1[pnt3]==-1)
+               {
+                  pointPointIndex1[pnt3] = out_pResult->GetNbPoints();
+                  out_pResult->AddPoint(GetPoint(pnt3));
+               }
+               out_pResult->AddTriangle(pointPointIndex1[pnt2],pointPointIndex1[pnt3],pnt0);
+            }
+
+            break;
+         }
+         case 2: // special case, two cuts of type 0
+         {
+            if(hits1->at(0).mode == 0 && hits1->at(1).mode == 0)
+            {
+               log.Compose("NICE CASE: Triangle %d has %d cuts, both are mode 0.\n",triangle1->GetIndex(),hits1->size());
+               in_pLog->Append(log);
+               log.Compose("hit0 %d %d %d %d.\n",hits1->at(0).tri0Mode0,hits1->at(0).tri0Mode1,hits1->at(0).tri1Mode0,hits1->at(0).tri1Mode1);
+               in_pLog->Append(log);
+               log.Compose("hit1 %d %d %d %d.\n",hits1->at(1).tri0Mode0,hits1->at(1).tri0Mode1,hits1->at(1).tri1Mode0,hits1->at(1).tri1Mode1);
+               in_pLog->Append(log);
+            }
+         }
+         default:
+         {
+            // we think that we have two complete cuts, let's find it!
+            std::vector<bool> doneHit(hits1->size(),false);
+            std::vector<int> hitIndices(hits1->size());
+            snIndex hitCount = 0;
+            snIndex lastEdgeIndex;
+            for(snIndex j=0;j<hits1->size();j++)
+            {
+               //log.Compose("MODE found %d\n",hits1->at(j).mode);
+               //in_pLog->Append(log);
+               if(hits1->at(j).mode == 0)
+               {
+                  // this means we have a case 0!
+                  // so for sure, we have another cut!
+                  // it is also
+               }
+               else if(hits1->at(j).mode == 2)
+               {
+                  hitIndices[hitCount++] = i;
+                  doneHit[j] = true;
+                  lastEdgeIndex = hits1->at(j).tri0Mode1;
+                  break;
+               }
+            }
+
+            // if we didn't find it...!
+            if(hitCount==0)
+            {
+               log.Compose("UNTREATED CASE: Triangle %d has %d cuts, but not cut with mode 2.\n",triangle1->GetIndex(),hits1->size());
+               in_pLog->Append(log);
+               break;
+            }
+
+            // great, now we have the first hit, let's continue with the next one
+
+            break;
+         }
+      }
+   }
+
+   return false;
+}

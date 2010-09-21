@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<CodeBlocks_layout_file>
+	<ActiveTarget name="opt" />
+	<File name="snBboxf.cpp" open="0" top="0" tabpos="4">
+		<Cursor position="454" topLine="14" />
+	</File>
+	<File name="snBboxf.h" open="0" top="0" tabpos="0">
+		<Cursor position="1726" topLine="27" />
+	</File>
+	<File name="snColor3f.h" open="0" top="0" tabpos="1">
+		<Cursor position="0" topLine="0" />
+	</File>
+	<File name="snColor4f.cpp" open="0" top="0" tabpos="3">
+		<Cursor position="0" topLine="0" />
+	</File>
+	<File name="snLine.cpp" open="0" top="0" tabpos="2">
+		<Cursor position="1459" topLine="18" />
+	</File>
+	<File name="snMesh.cpp" open="0" top="0" tabpos="0">
+		<Cursor position="1332" topLine="45" />
+	</File>
+	<File name="snMesh.h" open="0" top="0" tabpos="0">
+		<Cursor position="957" topLine="48" />
+	</File>
+	<File name="snPolygon.cpp" open="0" top="0" tabpos="5">
+		<Cursor position="0" topLine="0" />
+	</File>
+	<File name="snSegment.cpp" open="0" top="0" tabpos="6">
+		<Cursor position="0" topLine="0" />
+	</File>
+	<File name="snString.h" open="0" top="0" tabpos="0">
+		<Cursor position="9929" topLine="298" />
+	</File>
+	<File name="snTransformf.h" open="0" top="0" tabpos="0">
+		<Cursor position="0" topLine="33" />
+	</File>
+	<File name="snTriangle.cpp" open="0" top="0" tabpos="7">
+		<Cursor position="692" topLine="0" />
+	</File>
+	<File name="snTriangle.h" open="0" top="0" tabpos="3">
+		<Cursor position="2762" topLine="75" />
+	</File>
+	<File name="snTriangleMesh.cpp" open="0" top="0" tabpos="1">
+		<Cursor position="20977" topLine="649" />
+	</File>
+	<File name="snTriangleMesh.h" open="0" top="0" tabpos="5">
+		<Cursor position="3940" topLine="64" />
+	</File>
+	<File name="snVector3f.h" open="0" top="0" tabpos="0">
+		<Cursor position="4480" topLine="77" />
+	</File>
+</CodeBlocks_layout_file>

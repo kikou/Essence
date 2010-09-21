@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<CodeBlocks_project_file>
+	<FileVersion major="1" minor="6" />
+	<Project>
+		<Option title="snEssence" />
+		<Option pch_mode="2" />
+		<Option compiler="gcc" />
+		<Build>
+			<Target title="debug">
+				<Option output="../../nest_workgroup/lib/libsnEssence" prefix_auto="1" extension_auto="1" />
+				<Option working_dir="../../build/bin/debug" />
+				<Option object_output="../../build/obj/debug/" />
+				<Option type="3" />
+				<Option compiler="gcc" />
+				<Option createDefFile="1" />
+				<Compiler>
+					<Add option="-Wswitch-enum" />
+					<Add option="-Wextra" />
+					<Add option="-Wall" />
+					<Add option="-g" />
+				</Compiler>
+			</Target>
+			<Target title="opt">
+				<Option output="../../nest_workgroup/lib/libsnEssence" prefix_auto="1" extension_auto="1" />
+				<Option working_dir="../../build/bin/opt" />
+				<Option object_output="../../build/obj/opt/" />
+				<Option type="3" />
+				<Option compiler="gcc" />
+				<Option createDefFile="1" />
+				<Compiler>
+					<Add option="-O2" />
+				</Compiler>
+				<Linker>
+					<Add option="-s" />
+				</Linker>
+			</Target>
+		</Build>
+		<Compiler>
+			<Add option="-Wall" />
+			<Add option="-fPIC" />
+		</Compiler>
+		<Unit filename="snBboxf.cpp" />
+		<Unit filename="snBboxf.h" />
+		<Unit filename="snColor3f.cpp" />
+		<Unit filename="snColor3f.h" />
+		<Unit filename="snColor4f.cpp" />
+		<Unit filename="snColor4f.h" />
+		<Unit filename="snError.cpp" />
+		<Unit filename="snError.h" />
+		<Unit filename="snLine.cpp" />
+		<Unit filename="snLine.h" />
+		<Unit filename="snMesh.cpp" />
+		<Unit filename="snMesh.h" />
+		<Unit filename="snPath.cpp" />
+		<Unit filename="snPath.h" />
+		<Unit filename="snPlane.cpp" />
+		<Unit filename="snPlane.h" />
+		<Unit filename="snPolygon.cpp" />
+		<Unit filename="snPolygon.h" />
+		<Unit filename="snQuaternionf.cpp" />
+		<Unit filename="snQuaternionf.h" />
+		<Unit filename="snRay.cpp" />
+		<Unit filename="snRay.h" />
+		<Unit filename="snSegment.cpp" />
+		<Unit filename="snSegment.h" />
+		<Unit filename="snString.cpp" />
+		<Unit filename="snString.h" />
+		<Unit filename="snTimer.cpp" />
+		<Unit filename="snTimer.h" />
+		<Unit filename="snTransformf.cpp" />
+		<Unit filename="snTransformf.h" />
+		<Unit filename="snTriangle.cpp" />
+		<Unit filename="snTriangle.h" />
+		<Unit filename="snTriangleMesh.cpp" />
+		<Unit filename="snTriangleMesh.h" />
+		<Unit filename="snVariant.cpp" />
+		<Unit filename="snVariant.h" />
+		<Unit filename="snVector2f.cpp" />
+		<Unit filename="snVector2f.h" />
+		<Unit filename="snVector3f.cpp" />
+		<Unit filename="snVector3f.h" />
+		<Extensions>
+			<envvars />
+			<code_completion />
+			<lib_finder disable_auto="1" />
+			<debugger />
+		</Extensions>
+	</Project>
+</CodeBlocks_project_file>
